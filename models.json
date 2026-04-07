@@ -1,0 +1,14 @@
+{
+  "models": [
+    {
+      "id": "acestep-turbo",
+      "name": "AceStep 1.5 Turbo (Fast)",
+      "unet_name": "acestep_v1.5_turbo.safetensors"
+    },
+    {
+      "id": "acestep-standard",
+      "name": "AceStep 1.5 Standard (High Quality)",
+      "unet_name": "acestep_v1.5_standard.safetensors"
+    }
+  ]
+}
