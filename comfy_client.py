@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # --- HARDCODED TO LOCALHOST ---
 # This forces the script to ignore the .env file and talk directly to ComfyUI locally.
-APP_URL = "https://l0bxgzkcelmzk3-8888.proxy.runpod.net"
+APP_URL = os.environ.get("COMFYUI_URL", "https://l0bxgzkcelmzk3-8888.proxy.runpod.net").rstrip('/')
 
 NODE_TAGS_LYRICS = "94"  
 NODE_SAMPLER = "3"       
