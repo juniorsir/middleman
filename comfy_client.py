@@ -15,6 +15,8 @@ NODE_SAMPLER = "3"
 NODE_LATENT = "98"       
 NODE_UNET = "104"        
 NODE_AUDIO_OUT = "107"   
+NODE_VHS_AUDIO = "110"   # Load Audio Upload
+NODE_VAE_ENCODE = "109"  # VAE Encode Audio
 
 def check_comfyui_health():
     try:
@@ -23,6 +25,14 @@ def check_comfyui_health():
     except requests.exceptions.RequestException:
         return False
 
+def upload_file_to_comfy(file_bytes, filename):
+    url = f"{APP_URL}/upload/image" # ComfyUI uses the image endpoint for audio too
+    files = {"image": (filename, file_bytes)}
+    data = {"overwrite": "true"}
+    res = requests.post(url, files=files, data=data)
+    res.raise_for_status()
+    return res.json()["name"]
+    
 def log_terminal_progress(song_num, total_songs, progress, message, is_done=False):
     bar_length = 25
     filled = int(bar_length * progress // 100)
@@ -91,6 +101,16 @@ def generate_music_stream(params, num_songs=1):
         if NODE_LATENT in workflow: workflow[NODE_LATENT]["inputs"]["seconds"] = params["duration"]
         if NODE_UNET in workflow: workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
+        reference_audio = params.get("reference_audio")
+        if reference_audio and NODE_VHS_AUDIO in workflow:
+            logger.info(f"Using Audio Reference: {reference_audio}")
+            workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
+            # Connect the VAE Encoded audio to the Sampler
+            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
+        else:
+            # Connect the Empty Latent to the Sampler (Text-to-Audio)
+            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
+            
         try:
             pid = submit_workflow(workflow, client_id)
             prompt_ids.append(pid)
