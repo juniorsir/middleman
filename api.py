@@ -153,12 +153,25 @@ def api_generate_music(
     song_type: str = Form(None, description="Set to 'instrumental' to remove vocals"),
     seed: int = Form(None, description="Leave blank for random"),
     num_songs: int = Form(6, description="How many similar variations to generate (Max 6)"),
+    reference_audio: UploadFile = File(None, description="Optional audio file for reference"),
     api_key: str = Depends(verify_api_key)
 ):
     logger.info("============== NEW REQUEST RECEIVED ==============")
     logger.info(f"Model: {model_id} | Songs: {num_songs} | Instrumental: {song_type}")
     logger.info(f"Prompt: {prompt}")
 
+    comfy_ref_filename = None
+    if reference_audio:
+        try:
+            audio_bytes = await reference_audio.read()
+            clean_filename = f"ref_{uuid.uuid4().hex[:8]}_{reference_audio.filename}"
+            # Upload the file directly to ComfyUI's input folder
+            comfy_ref_filename = upload_file_to_comfy(audio_bytes, clean_filename)
+            logger.info(f"✅ Uploaded reference audio to ComfyUI: {comfy_ref_filename}")
+        except Exception as e:
+            logger.error(f"Failed to upload reference audio: {e}")
+            raise HTTPException(status_code=500, detail="Failed to process reference audio.")
+            
     available_models = load_models()
     selected_model = next((m for m in available_models if m["id"] == model_id), None)
 
@@ -177,7 +190,8 @@ def api_generate_music(
         "language": language,
         "cfg_scale": cfg_scale,
         "seed": seed or random.randint(1, 999999999999999),
-        "unet_name": unet_filename
+        "unet_name": unet_filename,
+        "reference_audio": comfy_ref_filename
     }
 
     try:
