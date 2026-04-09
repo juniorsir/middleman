@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Form, HTTPException, Depends, Header, Path, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from comfy_client import generate_music_stream, check_comfyui_health, simulate_music_stream
+from comfy_client import generate_music_stream, check_comfyui_health, simulate_music_stream, upload_file_to_comfy
 import json, os, random, sqlite3, requests, logging
 from dotenv import load_dotenv
 
@@ -141,7 +141,7 @@ def stream_song_from_comfy(song_id: str = Path(...)):
     return StreamingResponse(iterfile(), media_type="audio/mpeg")
 
 @app.post("/generate-music")
-def api_generate_music(
+async def api_generate_music(
     prompt: str = Form(..., description="Tags: e.g., 'Rock: A powerful track...'"),
     model_id: str = Form(..., description="The ID from /models, e.g., 'acestep-turbo'"),
     lyrics: str = Form("", description="Lyrics for the song"),
