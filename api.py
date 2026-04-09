@@ -6,7 +6,7 @@ import json, os, random, sqlite3, requests, logging, uuid
 from dotenv import load_dotenv
 
 load_dotenv()
-APP_URL = os.environ.get("COMFYUI_URL", "https://l0bxgzkcelmzk3-8888.proxy.runpod.net").rstrip('/')
+APP_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip('/')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
