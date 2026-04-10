@@ -142,7 +142,7 @@ def stream_song_from_comfy(song_id: str = Path(...)):
 
 @app.post("/generate-music")
 async def api_generate_music(
-    prompt: str = Form(..., description="Tags: e.g., 'Rock: A powerful track...'"),
+    prompt: str = Form("", description="Tags: e.g., 'Rock'"),
     model_id: str = Form(..., description="The ID from /models, e.g., 'acestep-turbo'"),
     lyrics: str = Form("", description="Lyrics for the song"),
     duration: int = Form(120, description="Duration of song in seconds"),
@@ -162,6 +162,9 @@ async def api_generate_music(
     logger.info(f"Prompt: {prompt}")
 
     comfy_ref_filename = None
+    if not prompt.strip() and reference_audio:
+        prompt = "High quality, melodic, balanced mix"
+        
     if audio_ref and audio_ref.filename:
         try:
             logger.info(f"🎤 Received Audio Reference: {audio_ref.filename}")
