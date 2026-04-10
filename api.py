@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Form, HTTPException, Depends, Header, Path, Request, Response, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from comfy_client import generate_music_stream, check_comfyui_health, simulate_music_stream, upload_file_to_comfy
+from comfy_client import generate_music_stream, check_comfyui_health, upload_file_to_comfy
 import json, os, random, sqlite3, requests, logging, uuid
 from dotenv import load_dotenv
 
