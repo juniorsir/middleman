@@ -16,7 +16,7 @@ def check_comfyui_health():
         return False
 
 def upload_file_to_comfy(file_bytes, filename):
-    url = f"{APP_URL}/upload/image" # ComfyUI uses the image endpoint for audio too
+    url = f"{APP_URL}/upload/image" 
     files = {"image": (filename, file_bytes)}
     data = {"overwrite": "true"}
     res = requests.post(url, files=files, data=data)
@@ -38,20 +38,15 @@ def submit_workflow(workflow, client_id):
     res = requests.post(url, json=payload, timeout=20)
     
     if res.status_code != 200:
-        # This will print the EXACT reason ComfyUI rejected the prompt
         error_info = res.json()
-        logger.error(f"--- COMFYUI VALIDATION ERROR ---")
-        logger.error(json.dumps(error_info, indent=2))
-        logger.error(f"---------------------------------")
-        raise Exception(f"ComfyUI rejected the request: {error_info.get('message', 'Check logs')}")
+        logger.error(f"--- COMFYUI VALIDATION ERROR ---\n{json.dumps(error_info, indent=2)}")
+        raise Exception(f"ComfyUI rejected the request.")
         
     return res.json().get("prompt_id")
 
- 
 def load_workflow(file):
     with open(file, "r") as f:
         return json.load(f)
-
 
 def get_node_id(workflow, class_type):
     for k, v in workflow.items():
@@ -59,20 +54,24 @@ def get_node_id(workflow, class_type):
             return str(k)
     return None
 
-
 def generate_music_stream(params, num_songs=1):
     client_id = str(uuid.uuid4())
     ws = websocket.WebSocket()
-
     ws_url = APP_URL.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={client_id}"
-    ws.connect(ws_url)
+    
+    try:
+        ws.connect(ws_url)
+    except Exception as e:
+        logger.error(f"WebSocket connect failed: {e}")
+        yield json.dumps({"status": "error", "message": "WebSocket connection failed."}) + "\n"
+        return
 
     # 🔥 SELECT WORKFLOW
     if params.get("reference_audio"):
-        base_workflow = load_workflow("music_workflow.json")  # NEW (audio)
+        base_workflow = load_workflow("music_workflow.json")
         mode = "audio"
     else:
-        base_workflow = load_workflow("text2song.json")  # OLD (text)
+        base_workflow = load_workflow("text2song.json")
         mode = "text"
 
     # 🔍 NODE DETECTION
@@ -81,7 +80,6 @@ def generate_music_stream(params, num_songs=1):
     NODE_LATENT = get_node_id(base_workflow, "EmptyAceStep1.5LatentAudio")
     NODE_UNET = get_node_id(base_workflow, "UNETLoader")
     NODE_AUDIO_OUT = get_node_id(base_workflow, "SaveAudioMP3") or get_node_id(base_workflow, "SaveAudio")
-
     NODE_VHS = get_node_id(base_workflow, "VHS_LoadAudioUpload")
     NODE_VAE_ENCODE = get_node_id(base_workflow, "VAEEncodeAudio")
 
@@ -93,31 +91,21 @@ def generate_music_stream(params, num_songs=1):
         seed = base_seed + i
         wf = json.loads(json.dumps(base_workflow))
 
-        # ---- TEXT PARAMS ----
         if NODE_TEXT:
             wf[NODE_TEXT]["inputs"].update({
-                "tags": params["tags"],
-                "lyrics": params["lyrics"],
-                "duration": params["duration"],
-                "seed": seed,
-                "bpm": params["bpm"],
-                "timesignature": params["timesignature"],
-                "language": params["language"],
-                "cfg_scale": params["cfg_scale"]
+                "tags": params["tags"], "lyrics": params["lyrics"],
+                "duration": params["duration"], "seed": seed,
+                "bpm": params["bpm"], "timesignature": params["timesignature"],
+                "language": params["language"], "cfg_scale": params["cfg_scale"]
             })
 
-        if NODE_SAMPLER:
-            wf[NODE_SAMPLER]["inputs"]["seed"] = seed
+        if NODE_SAMPLER: wf[NODE_SAMPLER]["inputs"]["seed"] = seed
+        if NODE_UNET: wf[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
-        if NODE_UNET:
-            wf[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
-
-        # 🔀 MODE-SPECIFIC LOGIC
         if mode == "text":
             wf[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT, 0]
             wf[NODE_LATENT]["inputs"]["seconds"] = params["duration"]
-
-        else:  # audio mode
+        else:
             wf[NODE_VHS]["inputs"]["audio"] = params["reference_audio"]
             wf[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
 
@@ -128,36 +116,61 @@ def generate_music_stream(params, num_songs=1):
     yield json.dumps({"status": "queued", "total": num_songs}) + "\n"
 
     completed = 0
+    try:
+        while completed < num_songs:
+            msg = json.loads(ws.recv())
+            t, data = msg.get("type"), msg.get("data", {})
+            pid = data.get("prompt_id")
+            
+            if pid not in prompt_ids: continue
+            idx = prompt_ids.index(pid) + 1
 
-    while completed < num_songs:
-        msg = json.loads(ws.recv())
-        t = msg.get("type")
-        data = msg.get("data", {})
+            if t == "executing":
+                node_executing = str(data.get("node"))
+                msg_text = "Encoding..." if node_executing == NODE_TEXT else "Synthesizing..."
+                log_terminal_progress(idx, num_songs, 10, msg_text)
+                yield json.dumps({"status": "generating", "song": idx, "progress": 10, "message": msg_text}) + "\n"
 
-        pid = data.get("prompt_id")
-        if pid not in prompt_ids:
-            continue
+            elif t == "progress":
+                val, mx = data.get("value", 0), data.get("max", 1)
+                pct = 15 + int((val / mx) * 80)
+                log_terminal_progress(idx, num_songs, pct, f"Step {val}/{mx}")
+                yield json.dumps({"status": "generating", "song": idx, "progress": pct}) + "\n"
 
-        idx = prompt_ids.index(pid) + 1
+            elif t == "executed" and str(data.get("node")) == str(NODE_AUDIO_OUT):
+                # 1. Extract the audio filename from ComfyUI response
+                audio_output = data['output']['audio'][0]
+                comfy_filename = audio_output['filename']
+                comfy_subfolder = audio_output.get('subfolder', '')
 
-        if t == "progress":
-            val = data.get("value", 0)
-            mx = data.get("max", 1)
-            pct = int((val / mx) * 100)
+                # 2. Generate a unique ID and save to database
+                song_uuid = str(uuid.uuid4())
+                try:
+                    conn = sqlite3.connect("music_database.db")
+                    c = conn.cursor()
+                    c.execute('''INSERT INTO songs (id, prompt, lyrics, seed, model, comfy_filename, comfy_subfolder) 
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)''', 
+                              (song_uuid, params["tags"], params["lyrics"], seed_map[pid], params.get("unet_name", "unknown"), comfy_filename, comfy_subfolder))
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    logger.error(f"Database error: {e}")
 
-            yield json.dumps({
-                "status": "generating",
-                "song": idx,
-                "progress": pct
-            }) + "\n"
+                # 3. Create the API URL for the frontend
+                song_url = f"/songs/{song_uuid}/stream"
+                log_terminal_progress(idx, num_songs, 100, "Done!", is_done=True)
+                
+                yield json.dumps({
+                    "status": "song_complete",
+                    "song": idx,
+                    "seed": seed_map[pid],
+                    "song_id": song_uuid,
+                    "audio_url": song_url
+                }) + "\n"
+                completed += 1
 
-        elif t == "executed" and str(data.get("node")) == str(NODE_AUDIO_OUT):
-            yield json.dumps({
-                "status": "song_complete",
-                "song": idx,
-                "seed": seed_map[pid]
-            }) + "\n"
-
-            completed += 1
-
-    ws.close()
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        yield json.dumps({"status": "error", "message": "Connection lost."}) + "\n"
+    finally:
+        ws.close()
