@@ -6,18 +6,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- HARDCODED TO LOCALHOST ---
-# This forces the script to ignore the .env file and talk directly to ComfyUI locally.
 APP_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip('/')
-
-NODE_TAGS_LYRICS = "94"  
-NODE_SAMPLER = "3"       
-NODE_LATENT = "98"       
-NODE_LATENT_EMPTY = "98"
-NODE_UNET = "104"        
-NODE_AUDIO_OUT = "107"   
-NODE_VHS_AUDIO = "110"   # Load Audio Upload
-NODE_VAE_ENCODE = "109"  # VAE Encode Audio
 
 def check_comfyui_health():
     try:
@@ -50,13 +39,6 @@ def submit_workflow(workflow, client_id):
     res.raise_for_status()
     return res.json().get("prompt_id")
 
-def get_audio_file(filename, subfolder="", folder_type="output"):
-    url = f"{APP_URL}/view"
-    params = {"filename": filename, "subfolder": subfolder, "type": folder_type}
-    res = requests.get(url, params=params, timeout=30)
-    res.raise_for_status()
-    return res.content
-
 def generate_music_stream(params, num_songs=1):
     client_id = str(uuid.uuid4())
     
@@ -64,7 +46,6 @@ def generate_music_stream(params, num_songs=1):
     ws_url = APP_URL.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={client_id}"
     
     try:
-        # Since we are on localhost, there is no Cloudflare! Connection is instant.
         logger.info(f"Connecting directly to ComfyUI at {ws_url}...")
         ws.connect(ws_url)
         logger.info("✅ WebSocket connected successfully!")
@@ -76,9 +57,39 @@ def generate_music_stream(params, num_songs=1):
     try:
         with open("music_workflow.json", 'r') as f:
             base_workflow = json.load(f)
+            
+            # --- SAFETY SHIELD: PREVENT KeyError: '3' Crahses ---
+            if "nodes" in base_workflow:
+                logger.error("🚨 CRITICAL ERROR: music_workflow.json is in UI FORMAT!")
+                logger.error("You MUST use the API Format JSON. The script cannot continue.")
+                yield json.dumps({"status": "error", "message": "Server configuration error: Workflow is in UI format. Please update music_workflow.json to API format."}) + "\n"
+                return
+
     except Exception as e:
         logger.error(f"Workflow setup error: {e}")
         yield json.dumps({"status": "error", "message": f"Workflow setup error: {e}"}) + "\n"
+        return
+
+    # ==========================================
+    # --- AUTO-DETECT NODE IDS DYNAMICALLY ---
+    # ==========================================
+    def get_node_id(class_type):
+        for k, v in base_workflow.items():
+            if isinstance(v, dict) and v.get("class_type") == class_type:
+                return str(k)
+        return None
+
+    NODE_TAGS_LYRICS = get_node_id("TextEncodeAceStepAudio1.5")
+    NODE_SAMPLER = get_node_id("KSampler")
+    NODE_LATENT_EMPTY = get_node_id("EmptyAceStep1.5LatentAudio")
+    NODE_UNET = get_node_id("UNETLoader")
+    NODE_AUDIO_OUT = get_node_id("SaveAudioMP3") or get_node_id("SaveAudio") 
+    NODE_VHS_AUDIO = get_node_id("VHS_LoadAudioUpload")
+    NODE_VAE_ENCODE = get_node_id("VAEEncodeAudio")
+
+    if not NODE_SAMPLER:
+        logger.error("🚨 Could not find a KSampler node in the workflow JSON!")
+        yield json.dumps({"status": "error", "message": "Invalid workflow JSON: Missing KSampler."}) + "\n"
         return
 
     prompt_ids = []
@@ -91,25 +102,31 @@ def generate_music_stream(params, num_songs=1):
         current_seed = base_seed + i 
         workflow = json.loads(json.dumps(base_workflow)) 
         
-        if NODE_TAGS_LYRICS in workflow:
+        # 1. Update text encoding parameters
+        if NODE_TAGS_LYRICS and NODE_TAGS_LYRICS in workflow:
             workflow[NODE_TAGS_LYRICS]["inputs"].update({
                 "tags": params["tags"], "lyrics": params["lyrics"], 
                 "duration": params["duration"], "seed": current_seed,
                 "bpm": params["bpm"], "timesignature": params["timesignature"],
                 "language": params["language"], "cfg_scale": params["cfg_scale"]
             })
+            
+        # 2. Update model and latent duration
         if NODE_SAMPLER in workflow: workflow[NODE_SAMPLER]["inputs"]["seed"] = current_seed
-        if NODE_LATENT in workflow: workflow[NODE_LATENT]["inputs"]["seconds"] = params["duration"]
-        if NODE_UNET in workflow: workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
+        if NODE_LATENT_EMPTY and NODE_LATENT_EMPTY in workflow: 
+            workflow[NODE_LATENT_EMPTY]["inputs"]["seconds"] = params["duration"]
+        if NODE_UNET and NODE_UNET in workflow: 
+            workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
+        # 3. DYNAMIC AUDIO ROUTING
         reference_audio = params.get("reference_audio")
-        if reference_audio and NODE_VHS_AUDIO in workflow:
-            logger.info(f"Using Audio Reference: {reference_audio}")
+        if reference_audio and NODE_VHS_AUDIO and NODE_VHS_AUDIO in workflow:
+            logger.info(f"Routing workflow for Audio-to-Audio...")
             workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
-            # Connect the VAE Encoded audio to the Sampler
-            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
-        else:
-            # Connect the Empty Latent to the Sampler (Text-to-Audio)
+            if NODE_VAE_ENCODE:
+                workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
+        elif NODE_LATENT_EMPTY and NODE_LATENT_EMPTY in workflow:
+            logger.info(f"Routing workflow for Text-to-Audio...")
             workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
             
         try:
@@ -141,11 +158,11 @@ def generate_music_stream(params, num_songs=1):
                 current_song_num = prompt_ids.index(active_prompt_id) + 1
 
                 if msg_type == 'executing':
-                    node = data.get('node')
-                    if node == NODE_TAGS_LYRICS:
+                    node = str(data.get('node'))
+                    if node == str(NODE_TAGS_LYRICS):
                         log_terminal_progress(current_song_num, num_songs, 5, "Encoding Lyrics & Tags...")
                         yield json.dumps({"status": "generating", "song": current_song_num, "progress": 5, "message": f"Encoding..."}) + "\n"
-                    elif node == NODE_SAMPLER:
+                    elif node == str(NODE_SAMPLER):
                         log_terminal_progress(current_song_num, num_songs, 10, "Synthesizing Audio...")
                         yield json.dumps({"status": "generating", "song": current_song_num, "progress": 10, "message": f"Synthesizing..."}) + "\n"
                         
@@ -157,7 +174,7 @@ def generate_music_stream(params, num_songs=1):
                     log_terminal_progress(current_song_num, num_songs, pct, f"Step {val}/{mx}")
                     yield json.dumps({"status": "generating", "song": current_song_num, "progress": pct, "message": f"Step {val}/{mx}..."}) + "\n"
                     
-                elif msg_type == 'executed' and data.get('node') == NODE_AUDIO_OUT:
+                elif msg_type == 'executed' and str(data.get('node')) == str(NODE_AUDIO_OUT):
                     audio_info = data['output']['audio'][0]
                     comfy_filename = audio_info['filename']
                     comfy_subfolder = audio_info.get('subfolder', '')
@@ -204,66 +221,3 @@ def generate_music_stream(params, num_songs=1):
         yield json.dumps({"status": "error", "message": f"Connection lost: {e}"}) + "\n"
     finally:
         ws.close()
-
-def simulate_music_stream(params, num_songs=1):
-    logger.info(f"🧪 SIMULATION MODE: Faking {num_songs} songs...")
-    
-    if not os.path.exists("test.mp3"):
-        yield json.dumps({"status": "error", "message": "test.mp3 not found in folder!"}) + "\n"
-        return
-
-    with open("test.mp3", "rb") as f:
-        audio_bytes = f.read()
-        b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-
-    yield json.dumps({"status": "queued", "message": f"Successfully queued {num_songs} variations.", "total_songs": num_songs}) + "\n"
-
-    for current_song_num in range(1, num_songs + 1):
-        current_seed = params["seed"] + current_song_num
-        
-        log_terminal_progress(current_song_num, num_songs, 5, "Encoding Lyrics & Tags...")
-        yield json.dumps({"status": "generating", "song": current_song_num, "progress": 5, "message": "Encoding..."}) + "\n"
-        time.sleep(1) 
-        
-        log_terminal_progress(current_song_num, num_songs, 10, "Synthesizing Audio...")
-        yield json.dumps({"status": "generating", "song": current_song_num, "progress": 10, "message": "Synthesizing..."}) + "\n"
-        time.sleep(1)
-
-        for pct in range(20, 100, 15):
-            log_terminal_progress(current_song_num, num_songs, pct, f"Step {pct}/100")
-            yield json.dumps({"status": "generating", "song": current_song_num, "progress": pct, "message": f"Step {pct}/100..."}) + "\n"
-            time.sleep(0.8) 
-
-        song_uuid = str(uuid.uuid4())
-        
-        try:
-            conn = sqlite3.connect("music_database.db")
-            c = conn.cursor()
-            c.execute('''INSERT INTO songs (id, prompt, lyrics, seed, model, comfy_filename, comfy_subfolder) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-                      (song_uuid, params["tags"], params["lyrics"], current_seed, params.get("unet_name", "unknown"), "test.mp3", ""))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"Database error: {e}")
-
-        song_url = f"/songs/{song_uuid}/stream"
-        
-        log_terminal_progress(current_song_num, num_songs, 100, f"Saved MP3! (Seed: {current_seed})", is_done=True)
-        logger.info(f"🔗 Song {current_song_num} Ready! API Stream URL: {song_url}")
-        
-        yield json.dumps({
-            "status": "song_complete", 
-            "song": current_song_num,
-            "progress": 100, 
-            "message": f"Song {current_song_num} Ready!",
-            "seed": current_seed,
-            "song_id": song_uuid,
-            "audio_url": song_url,
-            "audio_base64": b64_audio
-        }) + "\n"
-        
-        time.sleep(1) 
-
-    logger.info(f"🎉 SIMULATION COMPLETE: All {num_songs} songs sent to frontend!")
-    yield json.dumps({"status": "all_complete", "message": "All variations generated!"}) + "\n"
