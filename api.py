@@ -153,6 +153,7 @@ async def api_generate_music(
     song_type: str = Form(None, description="Set to 'instrumental' to remove vocals"),
     seed: int = Form(None, description="Leave blank for random"),
     num_songs: int = Form(6, description="How many similar variations to generate (Max 6)"),
+    denoise: float = Form(0.55, description="0.1 = same as ref, 0.9 = totally new"),
     audio_ref: UploadFile = File(None, description="Optional audio file for reference"),
     api_key: str = Depends(verify_api_key)
 ):
@@ -198,6 +199,7 @@ async def api_generate_music(
         "cfg_scale": cfg_scale,
         "seed": seed or random.randint(1, 999999999999999),
         "unet_name": unet_filename,
+        "denoise": denoise,
         "reference_audio": comfy_ref_filename
     }
 
