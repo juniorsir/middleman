@@ -111,16 +111,23 @@ def generate_music_stream(params, num_songs=1):
         
         if reference_audio and NODE_VHS_AUDIO in workflow and NODE_VAE_ENCODE in workflow:
             # AUDIO-TO-AUDIO MODE
-            logger.info("Setting mode: Audio-to-Audio")
+            logger.info(f"Mode: Audio-to-Audio | Using Ref: {reference_audio}")
             workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
+            # Connect Sampler to VAE Encode (Node 109)
             workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
         else:
             # TEXT-TO-AUDIO MODE
-            logger.info("Setting mode: Text-to-Audio")
+            logger.info("Mode: Text-to-Audio | Routing to Empty Latent")
             
-            # FORCE Sampler to connect to Empty Latent (Node 98)
+            # 1. Force Sampler to connect to Empty Latent (Node 98)
             if NODE_SAMPLER in workflow and NODE_LATENT_EMPTY:
                 workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
+            
+            # 2. To prevent the 'strip' error, we must provide a dummy string
+            # to the Load Audio node instead of leaving it as None.
+            if NODE_VHS_AUDIO in workflow:
+                # 'example.wav' exists in every ComfyUI installation by default
+                workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = "example.wav"
             
             # ABSOLUTELY REMOVE THE AUDIO NODES TO PREVENT VALIDATION ERRORS
             for nid in [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]:
