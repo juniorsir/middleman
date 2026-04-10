@@ -49,38 +49,25 @@ def submit_workflow(workflow, client_id):
 
 def generate_music_stream(params, num_songs=1):
     client_id = str(uuid.uuid4())
-    
     ws = websocket.WebSocket()
     ws_url = APP_URL.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={client_id}"
     
     try:
-        logger.info(f"Connecting directly to ComfyUI at {ws_url}...")
         ws.connect(ws_url)
-        logger.info("✅ WebSocket connected successfully!")
     except Exception as e:
         logger.error(f"WebSocket connect failed: {e}")
-        yield json.dumps({"status": "error", "message": f"WebSocket connect failed: {e}"}) + "\n"
+        yield json.dumps({"status": "error", "message": "WebSocket connection failed."}) + "\n"
         return
 
     try:
         with open("music_workflow.json", 'r') as f:
             base_workflow = json.load(f)
-            
-            # --- SAFETY SHIELD: PREVENT KeyError: '3' Crahses ---
-            if "nodes" in base_workflow:
-                logger.error("🚨 CRITICAL ERROR: music_workflow.json is in UI FORMAT!")
-                logger.error("You MUST use the API Format JSON. The script cannot continue.")
-                yield json.dumps({"status": "error", "message": "Server configuration error: Workflow is in UI format. Please update music_workflow.json to API format."}) + "\n"
-                return
-
     except Exception as e:
         logger.error(f"Workflow setup error: {e}")
-        yield json.dumps({"status": "error", "message": f"Workflow setup error: {e}"}) + "\n"
+        yield json.dumps({"status": "error", "message": "Workflow file missing."}) + "\n"
         return
 
-    # ==========================================
-    # --- AUTO-DETECT NODE IDS DYNAMICALLY ---
-    # ==========================================
+    # --- 1. DYNAMIC NODE DETECTION ---
     def get_node_id(class_type):
         for k, v in base_workflow.items():
             if isinstance(v, dict) and v.get("class_type") == class_type:
@@ -95,65 +82,58 @@ def generate_music_stream(params, num_songs=1):
     NODE_VHS_AUDIO = get_node_id("VHS_LoadAudioUpload")
     NODE_VAE_ENCODE = get_node_id("VAEEncodeAudio")
 
-    if not NODE_SAMPLER:
-        logger.error("🚨 Could not find a KSampler node in the workflow JSON!")
-        yield json.dumps({"status": "error", "message": "Invalid workflow JSON: Missing KSampler."}) + "\n"
-        return
+    # LOG THE FOUND IDS SO WE CAN SEE THEM
+    logger.info(f"Detected Nodes -> Sampler: {NODE_SAMPLER}, EmptyLatent: {NODE_LATENT_EMPTY}, VAEEncode: {NODE_VAE_ENCODE}, AudioInput: {NODE_VHS_AUDIO}")
 
     prompt_ids = []
     seed_map = {} 
     base_seed = params["seed"]
     
-    logger.info(f"🚀 Queuing {num_songs} songs in ComfyUI...")
-    
     for i in range(num_songs):
         current_seed = base_seed + i 
         workflow = json.loads(json.dumps(base_workflow)) 
         
-        # 1. Update text encoding parameters
-        if NODE_TAGS_LYRICS and NODE_TAGS_LYRICS in workflow:
+        # 2. UPDATE TEXT PARAMETERS
+        if NODE_TAGS_LYRICS in workflow:
             workflow[NODE_TAGS_LYRICS]["inputs"].update({
                 "tags": params["tags"], "lyrics": params["lyrics"], 
                 "duration": params["duration"], "seed": current_seed,
                 "bpm": params["bpm"], "timesignature": params["timesignature"],
                 "language": params["language"], "cfg_scale": params["cfg_scale"]
             })
-            
-        # 2. Update model and latent duration
-        if NODE_SAMPLER in workflow: workflow[NODE_SAMPLER]["inputs"]["seed"] = current_seed
-        if NODE_LATENT_EMPTY and NODE_LATENT_EMPTY in workflow: 
-            workflow[NODE_LATENT_EMPTY]["inputs"]["seconds"] = params["duration"]
-        if NODE_UNET and NODE_UNET in workflow: 
-            workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
-        # 3. DYNAMIC AUDIO ROUTING
+        if NODE_SAMPLER in workflow: workflow[NODE_SAMPLER]["inputs"]["seed"] = current_seed
+        if NODE_LATENT_EMPTY in workflow: workflow[NODE_LATENT_EMPTY]["inputs"]["seconds"] = params["duration"]
+        if NODE_UNET in workflow: workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
+
+        # 3. STRICT ROUTING & CLEANUP
         reference_audio = params.get("reference_audio")
         
-        if reference_audio and NODE_VHS_AUDIO in workflow:
-            logger.info(f"Mode: Audio-to-Audio")
+        if reference_audio and NODE_VHS_AUDIO in workflow and NODE_VAE_ENCODE in workflow:
+            # AUDIO-TO-AUDIO MODE
+            logger.info("Setting mode: Audio-to-Audio")
             workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
-            if NODE_VAE_ENCODE:
-                workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
+            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
         else:
-            logger.info(f"Mode: Text-to-Audio")
-            if NODE_LATENT_EMPTY:
+            # TEXT-TO-AUDIO MODE
+            logger.info("Setting mode: Text-to-Audio")
+            
+            # FORCE Sampler to connect to Empty Latent (Node 98)
+            if NODE_SAMPLER in workflow and NODE_LATENT_EMPTY:
                 workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
             
-            # Identify nodes to remove
-            potential_removals = [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]
-            
-            for nid in potential_removals:
-                # ONLY delete the node if it exists AND it is not our primary output node
+            # ABSOLUTELY REMOVE THE AUDIO NODES TO PREVENT VALIDATION ERRORS
+            for nid in [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]:
                 if nid and nid in workflow and nid != NODE_AUDIO_OUT:
                     del workflow[nid]
-            
+
         try:
             pid = submit_workflow(workflow, client_id)
             prompt_ids.append(pid)
             seed_map[pid] = current_seed
         except Exception as e:
-            logger.error(f"\nFailed to submit song {i+1}: {e}")
-            yield json.dumps({"status": "error", "message": f"Failed to submit song {i+1}: {e}"}) + "\n"
+            logger.error(f"Submission failed: {e}")
+            yield json.dumps({"status": "error", "message": str(e)}) + "\n"
             return
 
     yield json.dumps({"status": "queued", "message": f"Successfully queued {num_songs} variations.", "total_songs": num_songs}) + "\n"
