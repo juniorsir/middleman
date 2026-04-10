@@ -36,7 +36,15 @@ def submit_workflow(workflow, client_id):
     url = f"{APP_URL}/prompt"
     payload = {"prompt": workflow, "client_id": client_id}
     res = requests.post(url, json=payload, timeout=20)
-    res.raise_for_status()
+    
+    if res.status_code != 200:
+        # This will print the EXACT reason ComfyUI rejected the prompt
+        error_info = res.json()
+        logger.error(f"--- COMFYUI VALIDATION ERROR ---")
+        logger.error(json.dumps(error_info, indent=2))
+        logger.error(f"---------------------------------")
+        raise Exception(f"ComfyUI rejected the request: {error_info.get('message', 'Check logs')}")
+        
     return res.json().get("prompt_id")
 
 def generate_music_stream(params, num_songs=1):
