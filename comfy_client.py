@@ -13,6 +13,7 @@ APP_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip('/')
 NODE_TAGS_LYRICS = "94"  
 NODE_SAMPLER = "3"       
 NODE_LATENT = "98"       
+NODE_LATENT_EMPTY = "98"
 NODE_UNET = "104"        
 NODE_AUDIO_OUT = "107"   
 NODE_VHS_AUDIO = "110"   # Load Audio Upload
