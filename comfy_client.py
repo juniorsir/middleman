@@ -76,6 +76,7 @@ def generate_music_stream(params, num_songs=1):
 
     # 🔍 NODE DETECTION
     NODE_TEXT = get_node_id(base_workflow, "TextEncodeAceStepAudio1.5")
+    print(f"DEBUG: Found Text Node ID: {NODE_TEXT}")
     NODE_SAMPLER = get_node_id(base_workflow, "KSampler")
     NODE_LATENT = get_node_id(base_workflow, "EmptyAceStep1.5LatentAudio")
     NODE_UNET = get_node_id(base_workflow, "UNETLoader")
