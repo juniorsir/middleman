@@ -48,218 +48,116 @@ def submit_workflow(workflow, client_id):
     return res.json().get("prompt_id")
 
  
+def load_workflow(file):
+    with open(file, "r") as f:
+        return json.load(f)
+
+
+def get_node_id(workflow, class_type):
+    for k, v in workflow.items():
+        if v.get("class_type") == class_type:
+            return str(k)
+    return None
+
+
 def generate_music_stream(params, num_songs=1):
     client_id = str(uuid.uuid4())
     ws = websocket.WebSocket()
+
     ws_url = APP_URL.replace("http://", "ws://").replace("https://", "wss://") + f"/ws?clientId={client_id}"
+    ws.connect(ws_url)
 
-    try:
-        ws.connect(ws_url)
-    except Exception as e:
-        logger.error(f"WebSocket connect failed: {e}")
-        yield json.dumps({"status": "error", "message": "WebSocket connection failed."}) + "\n"
-        return
+    # 🔥 SELECT WORKFLOW
+    if params.get("reference_audio"):
+        base_workflow = load_workflow("music_workflow.json")  # NEW (audio)
+        mode = "audio"
+    else:
+        base_workflow = load_workflow("text2song.json")  # OLD (text)
+        mode = "text"
 
-    try:
-        with open("music_workflow.json", 'r') as f:
-            base_workflow = json.load(f)
-    except Exception as e:
-        logger.error(f"Workflow setup error: {e}")
-        yield json.dumps({"status": "error", "message": "Workflow file missing."}) + "\n"
-        return
+    # 🔍 NODE DETECTION
+    NODE_TEXT = get_node_id(base_workflow, "TextEncodeAceStepAudio1.5")
+    NODE_SAMPLER = get_node_id(base_workflow, "KSampler")
+    NODE_LATENT = get_node_id(base_workflow, "EmptyAceStep1.5LatentAudio")
+    NODE_UNET = get_node_id(base_workflow, "UNETLoader")
+    NODE_AUDIO_OUT = get_node_id(base_workflow, "SaveAudioMP3") or get_node_id(base_workflow, "SaveAudio")
 
-    # -------------------------------
-    # 🔍 NODE DETECTION (STRICT)
-    # -------------------------------
-    def get_node_id(class_type):
-        for k, v in base_workflow.items():
-            if isinstance(v, dict) and v.get("class_type") == class_type:
-                return str(k)
-        return None
-
-    NODE_TAGS_LYRICS = get_node_id("TextEncodeAceStepAudio1.5")
-    NODE_SAMPLER = get_node_id("KSampler")
-    NODE_LATENT_EMPTY = get_node_id("EmptyAceStep1.5LatentAudio")
-    NODE_UNET = get_node_id("UNETLoader")
-    NODE_AUDIO_OUT = get_node_id("SaveAudioMP3") or get_node_id("SaveAudio")
-    NODE_VHS_AUDIO = get_node_id("VHS_LoadAudioUpload")
-    NODE_VAE_ENCODE = get_node_id("VAEEncodeAudio")
-
-    logger.info(f"Detected Nodes -> Sampler:{NODE_SAMPLER}, EmptyLatent:{NODE_LATENT_EMPTY}, VAEEncode:{NODE_VAE_ENCODE}, AudioInput:{NODE_VHS_AUDIO}")
-
-    # -------------------------------
-    # 🧹 CLEAN BROKEN REFERENCES
-    # -------------------------------
-    def clean_workflow(workflow):
-        valid_nodes = set(workflow.keys())
-        for node_id, node in workflow.items():
-            inputs = node.get("inputs", {})
-            for key, value in list(inputs.items()):
-                if isinstance(value, list) and len(value) == 2:
-                    ref = str(value[0])
-                    if ref not in valid_nodes:
-                        logger.warning(f"Removed broken link {node_id}.{key} -> {ref}")
-                        del inputs[key]
-
-    # -------------------------------
-    # 🚨 VALIDATION
-    # -------------------------------
-    if not NODE_SAMPLER:
-        raise Exception("KSampler not found")
+    NODE_VHS = get_node_id(base_workflow, "VHS_LoadAudioUpload")
+    NODE_VAE_ENCODE = get_node_id(base_workflow, "VAEEncodeAudio")
 
     base_seed = params["seed"]
     prompt_ids = []
     seed_map = {}
 
-    # -------------------------------
-    # 🔁 MAIN LOOP
-    # -------------------------------
     for i in range(num_songs):
-        current_seed = base_seed + i
-        workflow = json.loads(json.dumps(base_workflow))
+        seed = base_seed + i
+        wf = json.loads(json.dumps(base_workflow))
 
-        # ---- update params ----
-        if NODE_TAGS_LYRICS in workflow:
-            workflow[NODE_TAGS_LYRICS]["inputs"].update({
+        # ---- TEXT PARAMS ----
+        if NODE_TEXT:
+            wf[NODE_TEXT]["inputs"].update({
                 "tags": params["tags"],
                 "lyrics": params["lyrics"],
                 "duration": params["duration"],
-                "seed": current_seed,
+                "seed": seed,
                 "bpm": params["bpm"],
                 "timesignature": params["timesignature"],
                 "language": params["language"],
                 "cfg_scale": params["cfg_scale"]
             })
 
-        if NODE_SAMPLER in workflow:
-            workflow[NODE_SAMPLER]["inputs"]["seed"] = current_seed
+        if NODE_SAMPLER:
+            wf[NODE_SAMPLER]["inputs"]["seed"] = seed
 
-        if NODE_LATENT_EMPTY in workflow:
-            workflow[NODE_LATENT_EMPTY]["inputs"]["seconds"] = params["duration"]
+        if NODE_UNET:
+            wf[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
-        if NODE_UNET in workflow:
-            workflow[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
+        # 🔀 MODE-SPECIFIC LOGIC
+        if mode == "text":
+            wf[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT, 0]
+            wf[NODE_LATENT]["inputs"]["seconds"] = params["duration"]
 
-        # -------------------------------
-        # 🔀 ROUTING (FIXED)
-        # -------------------------------
-        reference_audio = params.get("reference_audio")
+        else:  # audio mode
+            wf[NODE_VHS]["inputs"]["audio"] = params["reference_audio"]
+            wf[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
 
-        if reference_audio and NODE_VHS_AUDIO and NODE_VAE_ENCODE:
-            logger.info(f"Mode: Audio-to-Audio | Ref: {reference_audio}")
+        pid = submit_workflow(wf, client_id)
+        prompt_ids.append(pid)
+        seed_map[pid] = seed
 
-            workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
-            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
+    yield json.dumps({"status": "queued", "total": num_songs}) + "\n"
 
-        else:
-            logger.info("Mode: Text-to-Audio")
+    completed = 0
 
-            if not NODE_LATENT_EMPTY:
-                raise Exception("Empty latent node missing")
+    while completed < num_songs:
+        msg = json.loads(ws.recv())
+        t = msg.get("type")
+        data = msg.get("data", {})
 
-            # FORCE correct connection
-            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
+        pid = data.get("prompt_id")
+        if pid not in prompt_ids:
+            continue
 
-            # 🔥 IMPORTANT FIX: DO NOT DELETE NODES
-            # Instead disable safely
-            if NODE_VHS_AUDIO in workflow:
-                workflow[NODE_VHS_AUDIO]["inputs"].clear()
+        idx = prompt_ids.index(pid) + 1
 
-        # -------------------------------
-        # 🧹 CLEAN GRAPH (CRITICAL)
-        # -------------------------------
-        clean_workflow(workflow)
+        if t == "progress":
+            val = data.get("value", 0)
+            mx = data.get("max", 1)
+            pct = int((val / mx) * 100)
 
-        # -------------------------------
-        # 🚀 SUBMIT
-        # -------------------------------
-        try:
-            pid = submit_workflow(workflow, client_id)
-            prompt_ids.append(pid)
-            seed_map[pid] = current_seed
-        except Exception as e:
-            logger.error(f"Submission failed: {e}")
-            yield json.dumps({"status": "error", "message": str(e)}) + "\n"
-            return
+            yield json.dumps({
+                "status": "generating",
+                "song": idx,
+                "progress": pct
+            }) + "\n"
 
-    yield json.dumps({
-        "status": "queued",
-        "message": f"{num_songs} songs queued",
-        "total_songs": num_songs
-    }) + "\n"
+        elif t == "executed" and str(data.get("node")) == str(NODE_AUDIO_OUT):
+            yield json.dumps({
+                "status": "song_complete",
+                "song": idx,
+                "seed": seed_map[pid]
+            }) + "\n"
 
-    completed_songs = 0
+            completed += 1
 
-    # -------------------------------
-    # 📡 WEBSOCKET LOOP
-    # -------------------------------
-    try:
-        while completed_songs < num_songs:
-            out = ws.recv()
-
-            if not isinstance(out, str):
-                continue
-
-            message = json.loads(out)
-            msg_type = message.get('type')
-            data = message.get('data', {})
-
-            pid = data.get('prompt_id')
-            if pid not in prompt_ids:
-                continue
-
-            song_index = prompt_ids.index(pid) + 1
-
-            if msg_type == 'progress':
-                val = data.get('value', 0)
-                mx = data.get('max', 1)
-                pct = 10 + int((val / mx) * 80)
-
-                log_terminal_progress(song_index, num_songs, pct, f"Step {val}/{mx}")
-
-                yield json.dumps({
-                    "status": "generating",
-                    "song": song_index,
-                    "progress": pct
-                }) + "\n"
-
-            elif msg_type == 'executed' and str(data.get('node')) == str(NODE_AUDIO_OUT):
-                audio_info = data['output']['audio'][0]
-                filename = audio_info['filename']
-                subfolder = audio_info.get('subfolder', '')
-
-                song_id = str(uuid.uuid4())
-
-                try:
-                    conn = sqlite3.connect("music_database.db")
-                    c = conn.cursor()
-                    c.execute(
-                        '''INSERT INTO songs 
-                        (id, prompt, lyrics, seed, model, comfy_filename, comfy_subfolder)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                        (song_id, params["tags"], params["lyrics"],
-                         seed_map[pid], params.get("unet_name", "unknown"),
-                         filename, subfolder)
-                    )
-                    conn.commit()
-                    conn.close()
-                except Exception as e:
-                    logger.error(f"DB error: {e}")
-
-                log_terminal_progress(song_index, num_songs, 100, "Done", True)
-
-                yield json.dumps({
-                    "status": "song_complete",
-                    "song": song_index,
-                    "seed": seed_map[pid],
-                    "song_id": song_id
-                }) + "\n"
-
-                completed_songs += 1
-
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        yield json.dumps({"status": "error", "message": str(e)}) + "\n"
-
-    finally:
-        ws.close()
+    ws.close()
