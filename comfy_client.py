@@ -94,7 +94,7 @@ def generate_music_stream(params, num_songs=1):
 
         if NODE_TEXT:
             wf[NODE_TEXT]["inputs"].update({
-                "tags": params["tags"], "lyrics": params["lyrics"],
+                "tags": tags if tags else "high quality instrumental", "lyrics": params["lyrics"],
                 "duration": params["duration"], "seed": seed,
                 "bpm": params["bpm"], "timesignature": params["timesignature"],
                 "language": params["language"], "cfg_scale": params["cfg_scale"]
