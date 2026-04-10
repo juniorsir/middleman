@@ -120,14 +120,26 @@ def generate_music_stream(params, num_songs=1):
 
         # 3. DYNAMIC AUDIO ROUTING
         reference_audio = params.get("reference_audio")
-        if reference_audio and NODE_VHS_AUDIO and NODE_VHS_AUDIO in workflow:
-            logger.info(f"Routing workflow for Audio-to-Audio...")
+        
+        if reference_audio and NODE_VHS_AUDIO in workflow:
+            # Mode: Audio-to-Audio (Upload exists)
+            logger.info(f"Mode: Audio-to-Audio (Ref: {reference_audio})")
             workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
             if NODE_VAE_ENCODE:
                 workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
-        elif NODE_LATENT_EMPTY and NODE_LATENT_EMPTY in workflow:
-            logger.info(f"Routing workflow for Text-to-Audio...")
-            workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
+        else:
+            # Mode: Text-to-Audio (No upload)
+            logger.info(f"Mode: Text-to-Audio")
+            
+            # 1. Connect Sampler back to the Empty Latent node
+            if NODE_LATENT_EMPTY:
+                workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
+            
+            # 2. DELETE unused audio nodes so ComfyUI stops validating them
+            nodes_to_remove = [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]
+            for nid in nodes_to_remove:
+                if nid and nid in workflow:
+                    del workflow[nid]
             
         try:
             pid = submit_workflow(workflow, client_id)
