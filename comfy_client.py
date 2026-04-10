@@ -99,7 +99,10 @@ def generate_music_stream(params, num_songs=1):
                 "language": params["language"], "cfg_scale": params["cfg_scale"]
             })
 
-        if NODE_SAMPLER: wf[NODE_SAMPLER]["inputs"]["seed"] = seed
+        if NODE_SAMPLER: 
+                    wf[NODE_SAMPLER]["inputs"]["seed"] = seed
+                    wf[NODE_SAMPLER]["inputs"]["denoise"] = params.get("denoise", 0.55)
+            
         if NODE_UNET: wf[NODE_UNET]["inputs"]["unet_name"] = params["unet_name"]
 
         if mode == "text":
