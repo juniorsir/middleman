@@ -130,23 +130,21 @@ def generate_music_stream(params, num_songs=1):
         reference_audio = params.get("reference_audio")
         
         if reference_audio and NODE_VHS_AUDIO in workflow:
-            # Mode: Audio-to-Audio (Upload exists)
-            logger.info(f"Mode: Audio-to-Audio (Ref: {reference_audio})")
+            logger.info(f"Mode: Audio-to-Audio")
             workflow[NODE_VHS_AUDIO]["inputs"]["audio"] = reference_audio
             if NODE_VAE_ENCODE:
                 workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_VAE_ENCODE, 0]
         else:
-            # Mode: Text-to-Audio (No upload)
             logger.info(f"Mode: Text-to-Audio")
-            
-            # 1. Connect Sampler back to the Empty Latent node
             if NODE_LATENT_EMPTY:
                 workflow[NODE_SAMPLER]["inputs"]["latent_image"] = [NODE_LATENT_EMPTY, 0]
             
-            # 2. DELETE unused audio nodes so ComfyUI stops validating them
-            nodes_to_remove = [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]
-            for nid in nodes_to_remove:
-                if nid and nid in workflow:
+            # Identify nodes to remove
+            potential_removals = [NODE_VAE_ENCODE, NODE_VHS_AUDIO, "111", "112"]
+            
+            for nid in potential_removals:
+                # ONLY delete the node if it exists AND it is not our primary output node
+                if nid and nid in workflow and nid != NODE_AUDIO_OUT:
                     del workflow[nid]
             
         try:
