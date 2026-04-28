@@ -194,7 +194,7 @@ async def api_generate_music(
 
     if is_instrumental:
         tags = f"{prompt}, instrumental, no vocals, clean mix, high quality"
-    elif params.get("reference_audio"):
+    elif comfy_ref_filename:
         tags = f"{prompt}, similar style to reference audio, same vibe, same tempo, new lyrics, clean vocals, professional mix"
     else:
         tags = f"{prompt}, high quality, studio quality, clear vocals, structured song"
