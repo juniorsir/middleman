@@ -120,9 +120,24 @@ def generate_music_stream(params, num_songs=1):
     yield json.dumps({"status": "queued", "total": num_songs}) + "\n"
 
     completed = 0
+    ws.settimeout(10.0)  # Unblock every 10 seconds to prevent timeouts
+    
     try:
         while completed < num_songs:
-            msg = json.loads(ws.recv())
+            try:
+                msg_str = ws.recv()
+            except websocket.WebSocketTimeoutException:
+                # 1. Keep the API -> Frontend HTTP stream alive (bypasses proxy/Cloudflare timeouts)
+                yield json.dumps({"status": "processing", "message": "Still generating..."}) + "\n"
+                
+                # 2. Keep the Backend -> ComfyUI WebSocket alive
+                try:
+                    ws.ping()
+                except Exception:
+                    pass
+                continue
+
+            msg = json.loads(msg_str)
             t, data = msg.get("type"), msg.get("data", {})
             pid = data.get("prompt_id")
             
