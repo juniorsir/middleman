@@ -162,7 +162,7 @@ async def api_generate_music(
     logger.info(f"Prompt: {prompt}")
 
     comfy_ref_filename = None
-    if not prompt.strip() and reference_audio:
+    if not prompt.strip() and audio_ref:
         prompt = "High quality, melodic, balanced mix"
         
     if audio_ref and audio_ref.filename:
