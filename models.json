@@ -3,7 +3,7 @@
     {
       "id": "acestep-turbo",
       "name": "AceStep 1.5 Turbo (Fast)",
-      "unet_name": "acestep_v1.5_turbo.safetensors"
+      "unet_name": "acestep_v1.5_xl_sft_bf16.safetensors"
     },
     {
       "id": "acestep-standard",
