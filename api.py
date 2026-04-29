@@ -2,7 +2,7 @@ from fastapi import FastAPI, Form, HTTPException, Depends, Header, Path, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from comfy_client import generate_music_stream, check_comfyui_health, upload_file_to_comfy
-import json, os, random, sqlite3, requests, logging, uuid
+import json, os, random, sqlite3, requests, logging, uuid, time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,6 +42,22 @@ app.add_middleware(
 
 API_SECRET_KEY = os.environ.get("API_SECRET_KEY", "super-secret-music-key-123")
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    
+    # Log Incoming Request
+    logger.info(f"➡️ [REQ] {request.method} {request.url.path} | IP: {request.client.host if request.client else 'Unknown'}")
+    
+    # Process the request
+    response = await call_next(request)
+    
+    # Log Outgoing Response
+    process_time = (time.time() - start_time) * 1000
+    logger.info(f"⬅️ [RES] {response.status_code} | {request.url.path} | Time: {process_time:.2f}ms")
+    
+    return response
+    
 def verify_api_key(x_api_key: str = Header(None)):
     if x_api_key != API_SECRET_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid API Key")
@@ -213,6 +229,8 @@ async def api_generate_music(
         "reference_audio": comfy_ref_filename
     }
 
+    logger.info(f"📦 PARSED GENERATION PARAMS:\n{json.dumps(params, indent=2)}")
+    
     try:
         # Add anti-buffering headers so Cloudflare/Nginx sends data instantly!
         headers = {
