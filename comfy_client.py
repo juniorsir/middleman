@@ -140,6 +140,9 @@ def generate_music_stream(params, num_songs=1):
             msg = json.loads(msg_str)
             t, data = msg.get("type"), msg.get("data", {})
             pid = data.get("prompt_id")
+
+            short_msg = str(msg)[:200] + ('...' if len(str(msg)) > 200 else '')
+            logger.info(f"📥 WS RECV: {short_msg}")
             
             if pid not in prompt_ids: continue
             idx = prompt_ids.index(pid) + 1
@@ -186,8 +189,10 @@ def generate_music_stream(params, num_songs=1):
                     "song_id": song_uuid,
                     "audio_url": song_url
                 }) + "\n"
+                logger.info(f"📡 YIELDING TO FRONTEND: {json.dumps(final_payload)}")
+                
+                yield json.dumps(final_payload) + "\n"
                 completed += 1
-
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         yield json.dumps({"status": "error", "message": "Connection lost."}) + "\n"
